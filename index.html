@@ -128,20 +128,22 @@
 
 <script src="works.js"></script>
 <script>
-  const gallery     = document.getElementById('gallery');
-  const isTouch     = window.matchMedia('(hover: none)').matches;
+  const gallery  = document.getElementById('gallery');
+  const isTouch  = window.matchMedia('(hover: none)').matches;
 
-  // ── Build cards ──────────────────────────────────────────
+  // Карточки, которые должны воспроизводиться (ждут готовности видео)
+  const shouldPlay = new Set();
+
+  // ── Построить карточки ───────────────────────────────────
   WORKS.forEach(work => {
     const item = document.createElement('div');
-    item.className   = 'gallery-item loading';
+    item.className    = 'gallery-item loading';
     item.dataset.type = work.type;
 
     if (work.type === 'video') {
-      // data-src instead of src — actual load happens via IntersectionObserver
       item.innerHTML = `
         <div class="media-wrap">
-          <video data-src="${work.src}" muted loop playsinline preload="metadata"></video>
+          <video data-src="${work.src}" muted loop playsinline preload="none"></video>
         </div>`;
     } else {
       item.innerHTML = `
@@ -153,42 +155,64 @@
     gallery.appendChild(item);
   });
 
-  // ── Observer 1: ленивая загрузка (срабатывает за 200px до вьюпорта) ──
+  // ── Подготовить видео (выставить src, навесить события) ──
+  function initVideo(item) {
+    const video = item.querySelector('video');
+    if (!video || video.src) return;
+
+    video.src = video.dataset.src;
+    video.preload = 'auto';
+    video.load();
+
+    // Снять шиммер как только браузер готов к воспроизведению
+    video.addEventListener('canplay', () => {
+      item.classList.remove('loading');
+      // Если карточка уже была помечена к воспроизведению — запустить
+      if (shouldPlay.has(item)) video.play().catch(() => {});
+    }, { once: true });
+
+    // Retry при сетевой ошибке (до 3 раз)
+    let retries = 0;
+    video.addEventListener('error', () => {
+      if (retries >= 3) return;
+      retries++;
+      const src = video.src;
+      setTimeout(() => { video.src = ''; video.src = src; video.load(); }, 1500 * retries);
+    });
+  }
+
+  // ── Observer 1: загрузка за 300px до вьюпорта ────────────
   const loadObserver = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
       if (!entry.isIntersecting) return;
-      const item  = entry.target;
-      const video = item.querySelector('video');
-      const img   = item.querySelector('img');
+      const item = entry.target;
+      const img  = item.querySelector('img');
 
-      if (video && video.dataset.src && !video.src) {
-        video.src = video.dataset.src;
-        video.load();
-        video.addEventListener('loadeddata', () => {
-          item.classList.remove('loading');
-        }, { once: true });
-      }
+      initVideo(item);
+
       if (img && img.dataset.src && !img.src) {
         img.src = img.dataset.src;
-        img.addEventListener('load', () => {
-          item.classList.remove('loading');
-        }, { once: true });
+        img.addEventListener('load', () => item.classList.remove('loading'), { once: true });
       }
 
       loadObserver.unobserve(item);
     });
-  }, { rootMargin: '200px', threshold: 0 });
+  }, { rootMargin: '300px', threshold: 0 });
 
-  // ── Observer 2: мобильный автоплей (60% карточки в реальном вьюпорте) ──
+  // ── Observer 2: автоплей на мобилке при 60% видимости ────
   const playObserver = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
       if (!isTouch) return;
-      const video = entry.target.querySelector('video');
+      const item  = entry.target;
+      const video = item.querySelector('video');
       if (!video) return;
 
       if (entry.intersectionRatio >= 0.6) {
-        video.play().catch(() => {});
+        shouldPlay.add(item);
+        // Если видео уже готово — играть сразу, иначе сыграет по canplay
+        if (video.readyState >= 3) video.play().catch(() => {});
       } else {
+        shouldPlay.delete(item);
         video.pause();
       }
     });
@@ -199,7 +223,7 @@
     playObserver.observe(item);
   });
 
-  // ── Desktop hover play/pause ──────────────────────────────
+  // ── Десктоп: hover ───────────────────────────────────────
   if (!isTouch) {
     gallery.querySelectorAll('.gallery-item[data-type="video"]').forEach(item => {
       const video = item.querySelector('video');
